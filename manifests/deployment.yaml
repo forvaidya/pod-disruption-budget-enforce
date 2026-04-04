@@ -24,6 +24,11 @@ spec:
         fsGroup: 65532
       containers:
         - name: webhook
+          # IMPORTANT: For local development, use imagePullPolicy: Never with local image
+          # For production, MUST change to:
+          #   image: <registry>/<namespace>/pdb-webhook:<VERSION>  (use specific version, NOT latest)
+          #   imagePullPolicy: Always  (always pull from registry)
+          # Example: image: gcr.io/my-project/pdb-webhook:v1.0.0
           image: pdb-webhook:latest
           imagePullPolicy: Never
           ports:
