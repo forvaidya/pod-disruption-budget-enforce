@@ -1,7 +1,7 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
-  name: pdb-webhook-mutate
+  name: pdb-webhook
   labels:
     app.kubernetes.io/name: pdb-webhook
     app.kubernetes.io/component: admission-controller
@@ -19,14 +19,18 @@ webhooks:
       # caBundle is injected by cert-manager
       caBundle: ""
     rules:
+      # Validate namespace config completeness (CREATE and UPDATE)
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["namespaces"]
+        scope: "Cluster"
+      # Auto-create PDBs for deployments and statefulsets (CREATE only)
       - operations: ["CREATE"]
         apiGroups: ["apps"]
         apiVersions: ["v1"]
-        resources: ["deployments", "statefulsets", "pods"]
+        resources: ["deployments", "statefulsets"]
         scope: "*"
-    failurePolicy: Ignore
-    # failurePolicy: Ignore allows deployment to proceed even if webhook is unavailable.
-    # This is appropriate for a mutating webhook that auto-creates PDBs.
-    # Webhook runs on all namespaces but only mutates if both min/max labels are present.
+    failurePolicy: Fail
     sideEffects: None
     timeoutSeconds: 10

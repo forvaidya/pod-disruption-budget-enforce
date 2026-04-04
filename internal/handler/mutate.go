@@ -32,6 +32,28 @@ func NewMutatingHandler(c client.Client, log logr.Logger) *MutatingHandler {
 	}
 }
 
+// ValidateNamespaceConfig checks if namespace has complete PDB configuration
+// Returns error string if config is incomplete or invalid
+func (h *MutatingHandler) ValidateNamespaceConfig(ns *corev1.Namespace) string {
+	if ns == nil || ns.Labels == nil {
+		return ""
+	}
+
+	_, hasMin := ns.Labels["pdb-min-available"]
+	_, hasMax := ns.Labels["pdb-max-unavailable"]
+
+	// Both must be present or neither - incomplete config is an error
+	if hasMin != hasMax {
+		h.log.Info("rejecting namespace: incomplete PDB configuration",
+			"namespace", ns.Name,
+			"hasMin", hasMin,
+			"hasMax", hasMax)
+		return "namespace has incomplete PDB configuration: both pdb-min-available and pdb-max-unavailable labels must be set together"
+	}
+
+	return ""
+}
+
 func (h *MutatingHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -66,6 +88,51 @@ func (h *MutatingHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	req := admissionReview.Request
 	if req == nil {
 		http.Error(w, "no admission request", http.StatusBadRequest)
+		return
+	}
+
+	// Handle Namespace validation (CREATE and UPDATE)
+	if req.Kind.Kind == "Namespace" {
+		ns := &corev1.Namespace{}
+		if err := json.Unmarshal(req.Object.Raw, ns); err != nil {
+			h.log.Error(err, "failed to unmarshal namespace")
+			h.sendMutatingResponse(w, string(req.UID), nil)
+			return
+		}
+
+		// Validate namespace config completeness
+		if configErr := h.ValidateNamespaceConfig(ns); configErr != "" {
+			h.log.Info("rejecting namespace mutation: incomplete configuration",
+				"namespace", ns.Name,
+				"action", "reject",
+				"reason", "incomplete-config")
+			h.sendMutatingResponse(w, string(req.UID), nil)
+			// Return error response for namespace
+			response := &admissionv1.AdmissionReview{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "admission.k8s.io/v1",
+					Kind:       "AdmissionReview",
+				},
+				Response: &admissionv1.AdmissionResponse{
+					UID:     types.UID(req.UID),
+					Allowed: false,
+					Result: &metav1.Status{
+						Status:  metav1.StatusFailure,
+						Code:    400,
+						Message: configErr,
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		// Namespace config is valid or incomplete - allow
+		h.log.Info("namespace mutation allowed",
+			"namespace", ns.Name,
+			"action", "allow")
+		h.sendMutatingResponse(w, string(req.UID), nil)
 		return
 	}
 
