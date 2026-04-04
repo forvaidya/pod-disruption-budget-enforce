@@ -10,7 +10,11 @@ rules:
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create"]
-  # Permission to read Namespaces to access labels for PDB configuration
+  # Permission to read and watch Namespaces to access labels for PDB configuration
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
+  # Permission to list and patch Deployments and StatefulSets for rolling restarts
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "patch"]

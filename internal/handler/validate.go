@@ -67,9 +67,20 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only handle Deployments and StatefulSets on CREATE or UPDATE
-	// Reject bare Pods
+	// Only handle Deployments, StatefulSets, Pods, and Namespaces
 	if req.Operation != admissionv1.Create && req.Operation != admissionv1.Update {
+		h.sendResponse(w, string(req.UID), true, "")
+		return
+	}
+
+	// Handle Namespace updates - prevent label removal
+	if req.Kind.Kind == "Namespace" {
+		if req.Operation == admissionv1.Update {
+			if err := h.validateNamespaceUpdate(r.Context(), req); err != "" {
+				h.sendResponse(w, string(req.UID), false, err)
+				return
+			}
+		}
 		h.sendResponse(w, string(req.UID), true, "")
 		return
 	}
@@ -181,7 +192,16 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 			"kind", req.Kind.Kind,
 			"name", workloadName,
 			"namespace", workloadNamespace,
+			"operation", req.Operation,
+			"action", "reject",
 			"reason", msg)
+	} else {
+		h.log.Info("workload allowed by PDB",
+			"kind", req.Kind.Kind,
+			"name", workloadName,
+			"namespace", workloadNamespace,
+			"operation", req.Operation,
+			"action", "allow")
 	}
 
 	h.sendResponse(w, string(req.UID), allowed, msg)
@@ -258,6 +278,66 @@ func (h *Handler) hasPDB(ctx context.Context, namespace string, podLabels map[st
 	return false, "deployment rejected: no PodDisruptionBudget in namespace " + namespace +
 		" selects pod labels " + podLabelStr +
 		"; create a PDB with a matching selector before deploying"
+}
+
+func (h *Handler) validateNamespaceUpdate(ctx context.Context, req *admissionv1.AdmissionRequest) string {
+	// Unmarshal old and new namespace objects
+	oldNs := &corev1.Namespace{}
+	newNs := &corev1.Namespace{}
+
+	if err := json.Unmarshal(req.OldObject.Raw, oldNs); err != nil {
+		h.log.Error(err, "failed to unmarshal old namespace")
+		return "internal error: failed to parse old namespace"
+	}
+
+	if err := json.Unmarshal(req.Object.Raw, newNs); err != nil {
+		h.log.Error(err, "failed to unmarshal new namespace")
+		return "internal error: failed to parse new namespace"
+	}
+
+	// Get old label values
+	oldMinVal, oldHasMin := oldNs.Labels["pdb-min-available"]
+	oldMaxVal, oldHasMax := oldNs.Labels["pdb-max-unavailable"]
+	newMinVal, newHasMin := newNs.Labels["pdb-min-available"]
+	newMaxVal, newHasMax := newNs.Labels["pdb-max-unavailable"]
+
+	// If labels exist in old but not in new, reject (label removal not allowed)
+	if (oldHasMin || oldHasMax) && (!newHasMin || !newHasMax) {
+		h.log.Info("rejecting namespace update: PDB config labels cannot be removed",
+			"namespace", req.Name,
+			"action", "reject",
+			"reason", "label-removal-attempted",
+			"oldHasMin", oldHasMin,
+			"oldHasMax", oldHasMax,
+			"newHasMin", newHasMin,
+			"newHasMax", newHasMax)
+		return "PDB configuration labels (pdb-min-available, pdb-max-unavailable) cannot be removed once set; workloads depend on these labels for PDB enforcement"
+	}
+
+	// If labels exist in old, values cannot be changed (immutable)
+	if oldHasMin && newHasMin && oldMinVal != newMinVal {
+		h.log.Info("rejecting namespace update: pdb-min-available label value cannot be changed",
+			"namespace", req.Name,
+			"action", "reject",
+			"reason", "label-immutable",
+			"label", "pdb-min-available",
+			"oldValue", oldMinVal,
+			"newValue", newMinVal)
+		return "PDB configuration label pdb-min-available cannot be changed after being set; remove and re-add to change values"
+	}
+
+	if oldHasMax && newHasMax && oldMaxVal != newMaxVal {
+		h.log.Info("rejecting namespace update: pdb-max-unavailable label value cannot be changed",
+			"namespace", req.Name,
+			"action", "reject",
+			"reason", "label-immutable",
+			"label", "pdb-max-unavailable",
+			"oldValue", oldMaxVal,
+			"newValue", newMaxVal)
+		return "PDB configuration label pdb-max-unavailable cannot be changed after being set; remove and re-add to change values"
+	}
+
+	return ""
 }
 
 func (h *Handler) sendResponse(w http.ResponseWriter, uid string, allowed bool, msg string) {

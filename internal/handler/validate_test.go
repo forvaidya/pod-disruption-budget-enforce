@@ -522,3 +522,286 @@ func TestValidatingHandlerHandle(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateNamespaceUpdate(t *testing.T) {
+	zaplog, _ := zap.NewProduction()
+	logger := zapr.NewLogger(zaplog)
+	scheme := runtime.NewScheme()
+	corev1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	handler := NewHandler(client, logger)
+
+	tests := []struct {
+		name     string
+		oldNs    *corev1.Namespace
+		newNs    *corev1.Namespace
+		wantErr  bool
+		wantMsg  string
+	}{
+		{
+			name: "both labels present in both old and new - allowed",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+						"other-label":         "value",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "both labels present in old, min removed in new - rejected",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			wantErr: true,
+			wantMsg: "PDB configuration labels (pdb-min-available, pdb-max-unavailable) cannot be removed once set",
+		},
+		{
+			name: "both labels present in old, max removed in new - rejected",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available": "1",
+					},
+				},
+			},
+			wantErr: true,
+			wantMsg: "PDB configuration labels (pdb-min-available, pdb-max-unavailable) cannot be removed once set",
+		},
+		{
+			name: "both labels present in old, both removed in new - rejected",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{},
+				},
+			},
+			wantErr: true,
+			wantMsg: "PDB configuration labels (pdb-min-available, pdb-max-unavailable) cannot be removed once set",
+		},
+		{
+			name: "no labels in old, both added in new - allowed",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "no labels in old, no labels in new - allowed",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldData, _ := json.Marshal(tt.oldNs)
+			newData, _ := json.Marshal(tt.newNs)
+
+			req := &admissionv1.AdmissionRequest{
+				UID:       "test-uid",
+				Name:      tt.oldNs.Name,
+				Namespace: "default",
+				Operation: admissionv1.Update,
+				Kind: metav1.GroupVersionKind{
+					Kind: "Namespace",
+				},
+				OldObject: runtime.RawExtension{Raw: oldData},
+				Object:    runtime.RawExtension{Raw: newData},
+			}
+
+			errMsg := handler.validateNamespaceUpdate(context.Background(), req)
+
+			if tt.wantErr {
+				assert.NotEmpty(t, errMsg, "expected error message")
+				assert.Contains(t, errMsg, tt.wantMsg)
+			} else {
+				assert.Empty(t, errMsg, "expected no error")
+			}
+		})
+	}
+}
+
+func TestValidateNamespaceUpdate_ValueChanges(t *testing.T) {
+	zaplog, _ := zap.NewProduction()
+	logger := zapr.NewLogger(zaplog)
+	scheme := runtime.NewScheme()
+	corev1.AddToScheme(scheme)
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	handler := NewHandler(client, logger)
+
+	tests := []struct {
+		name     string
+		oldNs    *corev1.Namespace
+		newNs    *corev1.Namespace
+		wantErr  bool
+		wantMsg  string
+	}{
+		{
+			name: "min value changed - rejected",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "2",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			wantErr: true,
+			wantMsg: "pdb-min-available cannot be changed after being set",
+		},
+		{
+			name: "max value changed - rejected",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "2",
+					},
+				},
+			},
+			wantErr: true,
+			wantMsg: "pdb-max-unavailable cannot be changed after being set",
+		},
+		{
+			name: "both values unchanged, other labels added - allowed",
+			oldNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+					},
+				},
+			},
+			newNs: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test",
+					Labels: map[string]string{
+						"pdb-min-available":    "1",
+						"pdb-max-unavailable": "1",
+						"team":                "platform",
+					},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldData, _ := json.Marshal(tt.oldNs)
+			newData, _ := json.Marshal(tt.newNs)
+
+			req := &admissionv1.AdmissionRequest{
+				UID:       "test-uid",
+				Name:      tt.oldNs.Name,
+				Namespace: "default",
+				Operation: admissionv1.Update,
+				Kind: metav1.GroupVersionKind{
+					Kind: "Namespace",
+				},
+				OldObject: runtime.RawExtension{Raw: oldData},
+				Object:    runtime.RawExtension{Raw: newData},
+			}
+
+			errMsg := handler.validateNamespaceUpdate(context.Background(), req)
+
+			if tt.wantErr {
+				assert.NotEmpty(t, errMsg, "expected error message")
+				assert.Contains(t, errMsg, tt.wantMsg)
+			} else {
+				assert.Empty(t, errMsg, "expected no error")
+			}
+		})
+	}
+}

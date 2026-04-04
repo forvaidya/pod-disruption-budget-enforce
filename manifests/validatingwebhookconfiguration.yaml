@@ -24,6 +24,11 @@ webhooks:
         apiVersions: ["v1"]
         resources: ["deployments", "statefulsets", "pods"]
         scope: "*"
+      - operations: ["UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["namespaces"]
+        scope: "Cluster"
     failurePolicy: Fail
     # failurePolicy: Fail means the API server will reject the request if the webhook is unavailable.
     # This ensures strict enforcement but requires high availability and monitoring.
