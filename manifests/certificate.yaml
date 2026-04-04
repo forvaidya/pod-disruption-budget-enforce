@@ -1,0 +1,28 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: pdb-webhook-selfsigned
+  namespace: webhook-system
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: pdb-webhook-tls
+  namespace: webhook-system
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+spec:
+  secretName: pdb-webhook-tls
+  commonName: pdb-webhook.webhook-system.svc
+  dnsNames:
+    - pdb-webhook.webhook-system.svc
+    - pdb-webhook.webhook-system.svc.cluster.local
+  issuerRef:
+    name: pdb-webhook-selfsigned
+    kind: Issuer

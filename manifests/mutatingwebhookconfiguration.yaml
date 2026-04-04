@@ -1,0 +1,44 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: pdb-webhook-mutate
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+  annotations:
+    cert-manager.io/inject-ca-from: webhook-system/pdb-webhook-tls
+webhooks:
+  - name: pdb-webhook-mutate.webhook-system.svc
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: pdb-webhook
+        namespace: webhook-system
+        path: /mutate
+        port: 443
+      # caBundle is injected by cert-manager
+      caBundle: ""
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        resources: ["deployments"]
+        scope: "*"
+    failurePolicy: Ignore
+    # failurePolicy: Ignore allows deployment to proceed even if webhook is unavailable.
+    # This is appropriate for a mutating webhook that auto-creates PDBs.
+    # If webhook fails, the validating webhook will catch it.
+    sideEffects: None
+    timeoutSeconds: 10
+    namespaceSelector:
+      matchExpressions:
+        # Exclude webhook-system to prevent self-mutation
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - webhook-system
+        # Exclude kube-system to prevent interference with cluster internals
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system

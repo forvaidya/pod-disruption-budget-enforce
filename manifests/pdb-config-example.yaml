@@ -1,0 +1,57 @@
+# Example: Enable PDB Auto-creation with Namespace Labels
+#
+# The mutating webhook will ONLY auto-create PDBs if the namespace has these labels:
+#   - pdb-webhook.awanipro.com/min-available: <number>
+#   - pdb-webhook.awanipro.com/max-unavailable: <number>
+#
+# If these labels are NOT present on a namespace, the webhook will NOT auto-create PDBs.
+# The validating webhook will then enforce that deployments have explicit PDBs.
+#
+# To enable auto-PDB creation in a namespace:
+#   1. Add the two labels to the namespace
+#   2. Adjust minAvailable and maxUnavailable as needed per namespace
+#   3. Any new Deployments will automatically get a PDB with those values
+
+---
+# Example 1: Default namespace with PDB auto-creation enabled
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    pdb-webhook.awanipro.com/min-available: "2"
+    pdb-webhook.awanipro.com/max-unavailable: "4"
+
+---
+# Example 2: Staging namespace - more lenient PDB requirements
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    pdb-webhook.awanipro.com/min-available: "1"
+    pdb-webhook.awanipro.com/max-unavailable: "2"
+
+---
+# Example 3: Production namespace - stricter PDB requirements
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    pdb-webhook.awanipro.com/min-available: "3"
+    pdb-webhook.awanipro.com/max-unavailable: "1"
+
+---
+# Example 4: Namespace WITHOUT PDB auto-creation (no labels)
+# Deployments in this namespace must have explicit PDBs
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: no-auto-pdb
+  # No pdb-webhook.awanipro.com labels = no auto-creation
+  # Deployments will be rejected by validating webhook if they don't have explicit PDB
+
+---
+# How to update an existing namespace with labels:
+# kubectl label namespace default pdb-webhook.awanipro.com/min-available=2 pdb-webhook.awanipro.com/max-unavailable=4 --overwrite

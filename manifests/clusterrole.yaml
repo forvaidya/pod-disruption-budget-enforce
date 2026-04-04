@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pdb-webhook
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+rules:
+  # Permission to read PodDisruptionBudgets across all namespaces
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]

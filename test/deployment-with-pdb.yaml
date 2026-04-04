@@ -1,0 +1,33 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx-with-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nginx-with-pdb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-with-pdb
+  namespace: default
+  labels:
+    app: nginx-with-pdb
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-with-pdb
+  template:
+    metadata:
+      labels:
+        app: nginx-with-pdb
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.26-alpine
+          ports:
+            - containerPort: 80

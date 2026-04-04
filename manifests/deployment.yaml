@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pdb-webhook
+  namespace: webhook-system
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pdb-webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pdb-webhook
+        app.kubernetes.io/component: admission-controller
+    spec:
+      serviceAccountName: pdb-webhook
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: webhook
+          image: localhost:5000/pdb-webhook:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: webhook
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: TLS_CERT_FILE
+              value: /tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /tls/tls.key
+            - name: LISTEN_PORT
+              value: ":8443"
+          volumeMounts:
+            - name: webhook-tls
+              mountPath: /tls
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: webhook-tls
+          secret:
+            secretName: pdb-webhook-tls
+            defaultMode: 0400
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: pdb-webhook
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: pdb-webhook
+                topologyKey: kubernetes.io/hostname

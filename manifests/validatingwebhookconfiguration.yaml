@@ -1,0 +1,47 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: pdb-webhook
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+  annotations:
+    cert-manager.io/inject-ca-from: webhook-system/pdb-webhook-tls
+webhooks:
+  - name: pdb-webhook.webhook-system.svc
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: pdb-webhook
+        namespace: webhook-system
+        path: /validate
+        port: 443
+      # caBundle is injected by cert-manager
+      caBundle: ""
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        resources: ["deployments"]
+        scope: "*"
+    failurePolicy: Fail
+    # failurePolicy: Fail means the API server will reject the request if the webhook is unavailable.
+    # This ensures strict enforcement but requires high availability and monitoring.
+    # In production, ensure:
+    # 1. Webhook has multiple replicas with pod disruption budgets
+    # 2. Alert on webhook unavailability
+    # 3. Monitor response latency (timeoutSeconds should be generous)
+    sideEffects: None
+    timeoutSeconds: 10
+    namespaceSelector:
+      matchExpressions:
+        # Exclude webhook-system to prevent webhook validating itself
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - webhook-system
+        # Exclude kube-system to prevent interference with cluster internals
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
