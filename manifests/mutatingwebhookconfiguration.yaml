@@ -31,14 +31,6 @@ webhooks:
     sideEffects: None
     timeoutSeconds: 10
     namespaceSelector:
-      matchExpressions:
-        # Exclude webhook-system to prevent self-mutation
-        - key: kubernetes.io/metadata.name
-          operator: NotIn
-          values:
-            - webhook-system
-        # Exclude kube-system to prevent interference with cluster internals
-        - key: kubernetes.io/metadata.name
-          operator: NotIn
-          values:
-            - kube-system
+      matchLabels:
+        # Only enforce on namespaces explicitly labeled for PDB enforcement
+        pdb-webhook-enforce: "true"
