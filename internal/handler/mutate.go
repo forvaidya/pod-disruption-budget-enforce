@@ -69,41 +69,101 @@ func (h *MutatingHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only handle Deployments on CREATE
-	if req.Kind.Group != "apps" || req.Kind.Kind != "Deployment" || req.Operation != admissionv1.Create {
+	// Only handle Deployments and StatefulSets on CREATE
+	// Reject bare Pods
+	if req.Operation != admissionv1.Create {
 		h.sendMutatingResponse(w, string(req.UID), nil)
 		return
 	}
 
-	// Unmarshal deployment
-	deployment := &appsv1.Deployment{}
-	if err := json.Unmarshal(req.Object.Raw, deployment); err != nil {
-		h.log.Error(err, "failed to unmarshal deployment")
+	if req.Kind.Group != "apps" {
 		h.sendMutatingResponse(w, string(req.UID), nil)
 		return
+	}
+
+	// Reject bare Pods
+	if req.Kind.Kind == "Pod" {
+		h.log.Info("rejecting bare pod",
+			"name", req.Name,
+			"namespace", req.Namespace)
+		h.sendMutatingResponse(w, string(req.UID), nil)
+		return
+	}
+
+	// Only allow Deployments and StatefulSets
+	if req.Kind.Kind != "Deployment" && req.Kind.Kind != "StatefulSet" {
+		h.sendMutatingResponse(w, string(req.UID), nil)
+		return
+	}
+
+	// Unmarshal workload (Deployment or StatefulSet)
+	var workloadName, workloadNamespace string
+	var podLabels map[string]string
+
+	if req.Kind.Kind == "Deployment" {
+		deployment := &appsv1.Deployment{}
+		if err := json.Unmarshal(req.Object.Raw, deployment); err != nil {
+			h.log.Error(err, "failed to unmarshal deployment")
+			h.sendMutatingResponse(w, string(req.UID), nil)
+			return
+		}
+		workloadName = deployment.Name
+		workloadNamespace = deployment.Namespace
+		podLabels = deployment.Spec.Template.Labels
+	} else if req.Kind.Kind == "StatefulSet" {
+		sts := &appsv1.StatefulSet{}
+		if err := json.Unmarshal(req.Object.Raw, sts); err != nil {
+			h.log.Error(err, "failed to unmarshal statefulset")
+			h.sendMutatingResponse(w, string(req.UID), nil)
+			return
+		}
+		workloadName = sts.Name
+		workloadNamespace = sts.Namespace
+		podLabels = sts.Spec.Template.Labels
 	}
 
 	h.log.Info("validating mutation eligibility",
-		"name", deployment.Name,
-		"namespace", deployment.Namespace)
+		"kind", req.Kind.Kind,
+		"name", workloadName,
+		"namespace", workloadNamespace)
 
-	// Check if namespace has PDB configuration labels
-	hasConfig, minAvailable, maxUnavailable := h.getNamespacePDBLabels(r.Context(), deployment.Namespace)
-	if !hasConfig {
-		h.log.Info("namespace has no PDB configuration labels, skipping mutation",
-			"namespace", deployment.Namespace)
+	// Check if namespace has PDB configuration labels (both required)
+	hasConfig, minAvailable, maxUnavailable, configErr := h.getNamespacePDBLabels(r.Context(), workloadNamespace)
+	if configErr != "" {
+		// Incomplete configuration - reject
+		h.log.Info("namespace has incomplete PDB configuration",
+			"namespace", workloadNamespace,
+			"error", configErr)
 		h.sendMutatingResponse(w, string(req.UID), nil)
 		return
 	}
 
-	h.log.Info("namespace has PDB configuration, checking for existing PDB",
-		"name", deployment.Name,
-		"namespace", deployment.Namespace,
+	if !hasConfig {
+		// No PDB configuration at all - allow
+		h.log.Info("namespace has no PDB configuration labels, skipping mutation",
+			"namespace", workloadNamespace)
+		h.sendMutatingResponse(w, string(req.UID), nil)
+		return
+	}
+
+	// For StatefulSets, force maxUnavailable=1 for ordinal-order updates
+	if req.Kind.Kind == "StatefulSet" {
+		h.log.Info("StatefulSet detected: enforcing maxUnavailable=1 for ordinal-order rolling update",
+			"name", workloadName,
+			"namespace", workloadNamespace)
+		maxUnavailable = intOrString(1)
+		minAvailable = intstr.IntOrString{Type: intstr.Int, IntVal: 0} // Clear minAvailable
+	}
+
+	h.log.Info("namespace has complete PDB configuration, checking for existing PDB",
+		"kind", req.Kind.Kind,
+		"name", workloadName,
+		"namespace", workloadNamespace,
 		"minAvailable", minAvailable.IntVal,
 		"maxUnavailable", maxUnavailable.IntVal)
 
 	// Check if PDB already exists
-	pdbExists, err := h.pdbExists(r.Context(), deployment.Namespace, deployment.Name, deployment.Spec.Template.Labels)
+	pdbExists, err := h.pdbExists(r.Context(), workloadNamespace, workloadName, podLabels)
 	if err != nil {
 		h.log.Error(err, "failed to check if PDB exists")
 		// Continue anyway - let validating webhook catch it
@@ -113,20 +173,34 @@ func (h *MutatingHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	if pdbExists {
 		h.log.Info("matching PDB already exists, skipping mutation",
-			"deployment", deployment.Name,
-			"namespace", deployment.Namespace)
+			"kind", req.Kind.Kind,
+			"name", workloadName,
+			"namespace", workloadNamespace)
 		h.sendMutatingResponse(w, string(req.UID), nil)
 		return
 	}
 
 	// Create a default PDB with namespace-configured values
-	h.log.Info("creating PDB for deployment",
-		"deployment", deployment.Name,
-		"namespace", deployment.Namespace,
+	h.log.Info("creating PDB for workload",
+		"kind", req.Kind.Kind,
+		"name", workloadName,
+		"namespace", workloadNamespace,
 		"minAvailable", minAvailable.IntVal,
 		"maxUnavailable", maxUnavailable.IntVal)
 
-	pdb, err := h.createPDB(r.Context(), deployment, minAvailable, maxUnavailable)
+	// Get selector based on kind
+	var selector *metav1.LabelSelector
+	if req.Kind.Kind == "Deployment" {
+		deployment := &appsv1.Deployment{}
+		json.Unmarshal(req.Object.Raw, deployment)
+		selector = deployment.Spec.Selector
+	} else if req.Kind.Kind == "StatefulSet" {
+		sts := &appsv1.StatefulSet{}
+		json.Unmarshal(req.Object.Raw, sts)
+		selector = sts.Spec.Selector
+	}
+
+	pdb, err := h.createPDB(r.Context(), workloadName, workloadNamespace, selector, minAvailable, maxUnavailable)
 	if err != nil {
 		h.log.Error(err, "failed to create PDB")
 		// Don't fail the mutation - let validating webhook enforce it
@@ -167,12 +241,12 @@ func (h *MutatingHandler) pdbExists(ctx context.Context, namespace string, deplo
 	return false, nil
 }
 
-func (h *MutatingHandler) createPDB(ctx context.Context, deployment *appsv1.Deployment, minAvailable, maxUnavailable intstr.IntOrString) (*policyv1.PodDisruptionBudget, error) {
-	// Create PDB with same name as deployment
+func (h *MutatingHandler) createPDB(ctx context.Context, name, namespace string, selector *metav1.LabelSelector, minAvailable, maxUnavailable intstr.IntOrString) (*policyv1.PodDisruptionBudget, error) {
+	// Create PDB with same name as workload (Deployment or StatefulSet)
 	// Note: Kubernetes only allows ONE of MinAvailable or MaxUnavailable, not both
 	// Priority: MinAvailable takes precedence if minAvailable > 0
 	spec := policyv1.PodDisruptionBudgetSpec{
-		Selector: deployment.Spec.Selector,
+		Selector: selector,
 	}
 
 	// Only set MinAvailable if it's > 0, otherwise use MaxUnavailable
@@ -186,13 +260,13 @@ func (h *MutatingHandler) createPDB(ctx context.Context, deployment *appsv1.Depl
 
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      deployment.Name,
-			Namespace: deployment.Namespace,
+			Name:      name,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       "pdb-webhook",
 				"app.kubernetes.io/component":  "admission-controller",
 				"app.kubernetes.io/managed-by": "pdb-webhook-mutator",
-				"pdb-webhook.deployment-name":  deployment.Name,
+				"pdb-webhook.workload-name":    name,
 			},
 		},
 		Spec: spec,
@@ -206,41 +280,49 @@ func (h *MutatingHandler) createPDB(ctx context.Context, deployment *appsv1.Depl
 	return pdb, nil
 }
 
-func (h *MutatingHandler) getNamespacePDBLabels(ctx context.Context, namespace string) (bool, intstr.IntOrString, intstr.IntOrString) {
+func (h *MutatingHandler) getNamespacePDBLabels(ctx context.Context, namespace string) (bool, intstr.IntOrString, intstr.IntOrString, string) {
 	// Get namespace to check for PDB configuration labels
 	ns := &corev1.Namespace{}
 	err := h.client.Get(ctx, types.NamespacedName{Name: namespace}, ns)
 	if err != nil {
 		h.log.Error(err, "failed to get namespace", "namespace", namespace)
-		return false, intstr.IntOrString{}, intstr.IntOrString{}
+		return false, intstr.IntOrString{}, intstr.IntOrString{}, ""
 	}
 
 	// Look for PDB configuration labels on the namespace
-	// Labels: pdb-min-available and pdb-max-unavailable
+	// Labels: pdb-min-available and pdb-max-unavailable (both required)
 	minStr, hasMin := ns.Labels["pdb-min-available"]
 	maxStr, hasMax := ns.Labels["pdb-max-unavailable"]
 
-	// If labels don't exist, don't mutate
-	if !hasMin || !hasMax {
-		h.log.Info("namespace does not have PDB config labels",
+	// Both must be present or neither - incomplete config is an error
+	if hasMin != hasMax {
+		errMsg := "incomplete PDB configuration: both pdb-min-available and pdb-max-unavailable labels must be set together"
+		h.log.Info(errMsg,
 			"namespace", namespace,
 			"hasMin", hasMin,
 			"hasMax", hasMax)
-		return false, intstr.IntOrString{}, intstr.IntOrString{}
+		return false, intstr.IntOrString{}, intstr.IntOrString{}, errMsg
+	}
+
+	// If neither exists, allow without constraints
+	if !hasMin {
+		h.log.Info("namespace has no PDB config labels",
+			"namespace", namespace)
+		return false, intstr.IntOrString{}, intstr.IntOrString{}, ""
 	}
 
 	// Parse min-available
 	minVal, err := strconv.Atoi(minStr)
 	if err != nil {
 		h.log.Error(err, "failed to parse pdb-min-available label", "namespace", namespace, "value", minStr)
-		return false, intstr.IntOrString{}, intstr.IntOrString{}
+		return false, intstr.IntOrString{}, intstr.IntOrString{}, "invalid pdb-min-available value: " + minStr
 	}
 
 	// Parse max-unavailable
 	maxVal, err := strconv.Atoi(maxStr)
 	if err != nil {
 		h.log.Error(err, "failed to parse pdb-max-unavailable label", "namespace", namespace, "value", maxStr)
-		return false, intstr.IntOrString{}, intstr.IntOrString{}
+		return false, intstr.IntOrString{}, intstr.IntOrString{}, "invalid pdb-max-unavailable value: " + maxStr
 	}
 
 	minAvailable := intOrString(minVal)
@@ -251,7 +333,7 @@ func (h *MutatingHandler) getNamespacePDBLabels(ctx context.Context, namespace s
 		"minAvailable", minVal,
 		"maxUnavailable", maxVal)
 
-	return true, minAvailable, maxUnavailable
+	return true, minAvailable, maxUnavailable, ""
 }
 
 func (h *MutatingHandler) sendMutatingResponse(w http.ResponseWriter, uid string, patches []map[string]interface{}) {

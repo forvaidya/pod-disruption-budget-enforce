@@ -22,7 +22,7 @@ webhooks:
       - operations: ["CREATE", "UPDATE"]
         apiGroups: ["apps"]
         apiVersions: ["v1"]
-        resources: ["deployments"]
+        resources: ["deployments", "statefulsets", "pods"]
         scope: "*"
     failurePolicy: Fail
     # failurePolicy: Fail means the API server will reject the request if the webhook is unavailable.
@@ -33,7 +33,6 @@ webhooks:
     # 3. Monitor response latency (timeoutSeconds should be generous)
     sideEffects: None
     timeoutSeconds: 10
-    namespaceSelector:
-      matchLabels:
-        # Only validate on namespaces explicitly labeled
-        pdb-webhook-validate: "true"
+    # Webhook runs on all namespaces but only enforces if both min/max labels are present.
+    # If only one label is present, deployment is rejected with config error.
+    # If neither label is present, deployment is allowed without enforcement.

@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -66,36 +67,151 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only handle Deployments on CREATE or UPDATE
-	if req.Kind.Group != "apps" || req.Kind.Kind != "Deployment" ||
-		(req.Operation != admissionv1.Create && req.Operation != admissionv1.Update) {
+	// Only handle Deployments and StatefulSets on CREATE or UPDATE
+	// Reject bare Pods
+	if req.Operation != admissionv1.Create && req.Operation != admissionv1.Update {
 		h.sendResponse(w, string(req.UID), true, "")
 		return
 	}
 
-	// Unmarshal deployment from raw object
-	deployment := &appsv1.Deployment{}
-	if err := json.Unmarshal(req.Object.Raw, deployment); err != nil {
-		h.log.Error(err, "failed to unmarshal deployment")
-		h.sendResponse(w, string(req.UID), false, "internal error: failed to parse deployment")
+	if req.Kind.Group != "apps" {
+		h.sendResponse(w, string(req.UID), true, "")
 		return
 	}
 
-	h.log.Info("validating deployment",
-		"name", deployment.Name,
-		"namespace", deployment.Namespace,
+	// Reject bare Pods only if enforcement is enabled
+	if req.Kind.Kind == "Pod" {
+		// Check if enforcement is enabled in this namespace
+		configValid, configErr := h.checkNamespaceConfig(r.Context(), req.Namespace)
+
+		// If config is incomplete, reject
+		if configErr != "" {
+			h.log.Info("rejecting bare pod due to incomplete namespace configuration",
+				"name", req.Name,
+				"namespace", req.Namespace,
+				"error", configErr)
+			h.sendResponse(w, string(req.UID), false,
+				"namespace has incomplete PDB configuration: both pdb-min-available and pdb-max-unavailable labels must be set together")
+			return
+		}
+
+		// If enforcement enabled (both labels present), reject bare pod
+		if configValid {
+			h.log.Info("rejecting bare pod (enforcement enabled)",
+				"name", req.Name,
+				"namespace", req.Namespace)
+			h.sendResponse(w, string(req.UID), false,
+				"bare pods are not allowed in enforced namespace; pods must be created by Deployment or StatefulSet")
+			return
+		}
+
+		// No enforcement, allow bare pod
+		h.log.Info("allowing bare pod (no enforcement)",
+			"name", req.Name,
+			"namespace", req.Namespace)
+		h.sendResponse(w, string(req.UID), true, "")
+		return
+	}
+
+	// Only allow Deployments and StatefulSets
+	if req.Kind.Kind != "Deployment" && req.Kind.Kind != "StatefulSet" {
+		h.sendResponse(w, string(req.UID), true, "")
+		return
+	}
+
+	// Extract workload info based on Kind
+	var workloadName, workloadNamespace string
+	var podLabels map[string]string
+
+	if req.Kind.Kind == "Deployment" {
+		deployment := &appsv1.Deployment{}
+		if err := json.Unmarshal(req.Object.Raw, deployment); err != nil {
+			h.log.Error(err, "failed to unmarshal deployment")
+			h.sendResponse(w, string(req.UID), false, "internal error: failed to parse deployment")
+			return
+		}
+		workloadName = deployment.Name
+		workloadNamespace = deployment.Namespace
+		podLabels = deployment.Spec.Template.Labels
+	} else if req.Kind.Kind == "StatefulSet" {
+		sts := &appsv1.StatefulSet{}
+		if err := json.Unmarshal(req.Object.Raw, sts); err != nil {
+			h.log.Error(err, "failed to unmarshal statefulset")
+			h.sendResponse(w, string(req.UID), false, "internal error: failed to parse statefulset")
+			return
+		}
+		workloadName = sts.Name
+		workloadNamespace = sts.Namespace
+		podLabels = sts.Spec.Template.Labels
+	}
+
+	h.log.Info("validating workload",
+		"kind", req.Kind.Kind,
+		"name", workloadName,
+		"namespace", workloadNamespace,
 		"operation", req.Operation)
 
-	// Check if PDB exists for this deployment
-	allowed, msg := h.hasPDB(r.Context(), deployment.Namespace, deployment.Spec.Template.Labels)
+	// Check namespace configuration first
+	configValid, configErr := h.checkNamespaceConfig(r.Context(), workloadNamespace)
+	if configErr != "" {
+		// Incomplete configuration - reject
+		h.log.Info("workload rejected due to incomplete namespace configuration",
+			"kind", req.Kind.Kind,
+			"name", workloadName,
+			"namespace", workloadNamespace,
+			"error", configErr)
+		h.sendResponse(w, string(req.UID), false, configErr)
+		return
+	}
+
+	if !configValid {
+		// No configuration - allow
+		h.log.Info("namespace has no PDB configuration, allowing workload",
+			"kind", req.Kind.Kind,
+			"name", workloadName,
+			"namespace", workloadNamespace)
+		h.sendResponse(w, string(req.UID), true, "")
+		return
+	}
+
+	// Configuration is valid and present - enforce PDB requirement
+	allowed, msg := h.hasPDB(r.Context(), workloadNamespace, podLabels)
 	if !allowed {
-		h.log.Info("deployment rejected",
-			"name", deployment.Name,
-			"namespace", deployment.Namespace,
+		h.log.Info("workload rejected",
+			"kind", req.Kind.Kind,
+			"name", workloadName,
+			"namespace", workloadNamespace,
 			"reason", msg)
 	}
 
 	h.sendResponse(w, string(req.UID), allowed, msg)
+}
+
+func (h *Handler) checkNamespaceConfig(ctx context.Context, namespace string) (bool, string) {
+	// Get namespace to check for PDB configuration labels
+	ns := &corev1.Namespace{}
+	err := h.client.Get(ctx, types.NamespacedName{Name: namespace}, ns)
+	if err != nil {
+		h.log.Error(err, "failed to get namespace", "namespace", namespace)
+		return false, "internal error: failed to get namespace"
+	}
+
+	// Look for PDB configuration labels (both required or neither)
+	_, hasMin := ns.Labels["pdb-min-available"]
+	_, hasMax := ns.Labels["pdb-max-unavailable"]
+
+	// Both must be present or neither - incomplete config is an error
+	if hasMin != hasMax {
+		return false, "namespace has incomplete PDB configuration: both pdb-min-available and pdb-max-unavailable labels must be set together"
+	}
+
+	// If both exist, return true (enforce PDB)
+	if hasMin && hasMax {
+		return true, ""
+	}
+
+	// If neither exists, return false (no enforcement)
+	return false, ""
 }
 
 func (h *Handler) hasPDB(ctx context.Context, namespace string, podLabels map[string]string) (bool, string) {

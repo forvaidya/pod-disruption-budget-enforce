@@ -22,15 +22,11 @@ webhooks:
       - operations: ["CREATE"]
         apiGroups: ["apps"]
         apiVersions: ["v1"]
-        resources: ["deployments"]
+        resources: ["deployments", "statefulsets", "pods"]
         scope: "*"
     failurePolicy: Ignore
     # failurePolicy: Ignore allows deployment to proceed even if webhook is unavailable.
     # This is appropriate for a mutating webhook that auto-creates PDBs.
-    # If webhook fails, the validating webhook will catch it.
+    # Webhook runs on all namespaces but only mutates if both min/max labels are present.
     sideEffects: None
     timeoutSeconds: 10
-    namespaceSelector:
-      matchLabels:
-        # Only mutate on namespaces explicitly labeled
-        pdb-webhook-mutate: "true"
