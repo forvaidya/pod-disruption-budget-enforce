@@ -9,4 +9,8 @@ rules:
   # Permission to read PodDisruptionBudgets across all namespaces
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create"]
+  # Permission to read Namespaces to access labels for PDB configuration
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]

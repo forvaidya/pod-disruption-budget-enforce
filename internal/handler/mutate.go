@@ -169,31 +169,33 @@ func (h *MutatingHandler) pdbExists(ctx context.Context, namespace string, deplo
 
 func (h *MutatingHandler) createPDB(ctx context.Context, deployment *appsv1.Deployment, minAvailable, maxUnavailable intstr.IntOrString) (*policyv1.PodDisruptionBudget, error) {
 	// Create PDB with same name as deployment
+	// Note: Kubernetes only allows ONE of MinAvailable or MaxUnavailable, not both
+	// Priority: MinAvailable takes precedence if minAvailable > 0
+	spec := policyv1.PodDisruptionBudgetSpec{
+		Selector: deployment.Spec.Selector,
+	}
+
+	// Only set MinAvailable if it's > 0, otherwise use MaxUnavailable
+	if minAvailable.IntVal > 0 {
+		spec.MinAvailable = &minAvailable
+		h.log.Info("using minAvailable for PDB", "minAvailable", minAvailable.IntVal)
+	} else {
+		spec.MaxUnavailable = &maxUnavailable
+		h.log.Info("using maxUnavailable for PDB", "maxUnavailable", maxUnavailable.IntVal)
+	}
+
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deployment.Name,
 			Namespace: deployment.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":      "pdb-webhook",
-				"app.kubernetes.io/component": "admission-controller",
+				"app.kubernetes.io/name":       "pdb-webhook",
+				"app.kubernetes.io/component":  "admission-controller",
 				"app.kubernetes.io/managed-by": "pdb-webhook-mutator",
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         "apps/v1",
-					Kind:                "Deployment",
-					Name:                deployment.Name,
-					UID:                 deployment.UID,
-					Controller:          boolPtr(true),
-					BlockOwnerDeletion:  boolPtr(true),
-				},
+				"pdb-webhook.deployment-name":  deployment.Name,
 			},
 		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable:   &minAvailable,
-			MaxUnavailable: &maxUnavailable,
-			Selector:       deployment.Spec.Selector,
-		},
+		Spec: spec,
 	}
 
 	// Create the PDB
@@ -214,26 +216,30 @@ func (h *MutatingHandler) getNamespacePDBLabels(ctx context.Context, namespace s
 	}
 
 	// Look for PDB configuration labels on the namespace
-	// Labels should be: pdb-webhook.awanipro.com/min-available and pdb-webhook.awanipro.com/max-unavailable
-	minStr, hasMin := ns.Labels["pdb-webhook.awanipro.com/min-available"]
-	maxStr, hasMax := ns.Labels["pdb-webhook.awanipro.com/max-unavailable"]
+	// Labels: pdb-min-available and pdb-max-unavailable
+	minStr, hasMin := ns.Labels["pdb-min-available"]
+	maxStr, hasMax := ns.Labels["pdb-max-unavailable"]
 
 	// If labels don't exist, don't mutate
 	if !hasMin || !hasMax {
+		h.log.Info("namespace does not have PDB config labels",
+			"namespace", namespace,
+			"hasMin", hasMin,
+			"hasMax", hasMax)
 		return false, intstr.IntOrString{}, intstr.IntOrString{}
 	}
 
 	// Parse min-available
 	minVal, err := strconv.Atoi(minStr)
 	if err != nil {
-		h.log.Error(err, "failed to parse min-available label", "namespace", namespace, "value", minStr)
+		h.log.Error(err, "failed to parse pdb-min-available label", "namespace", namespace, "value", minStr)
 		return false, intstr.IntOrString{}, intstr.IntOrString{}
 	}
 
 	// Parse max-unavailable
 	maxVal, err := strconv.Atoi(maxStr)
 	if err != nil {
-		h.log.Error(err, "failed to parse max-unavailable label", "namespace", namespace, "value", maxStr)
+		h.log.Error(err, "failed to parse pdb-max-unavailable label", "namespace", namespace, "value", maxStr)
 		return false, intstr.IntOrString{}, intstr.IntOrString{}
 	}
 
