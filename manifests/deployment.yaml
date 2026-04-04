@@ -24,8 +24,8 @@ spec:
         fsGroup: 65532
       containers:
         - name: webhook
-          image: localhost:5000/pdb-webhook:latest
-          imagePullPolicy: IfNotPresent
+          image: pdb-webhook:latest
+          imagePullPolicy: Never
           ports:
             - name: webhook
               containerPort: 8443
