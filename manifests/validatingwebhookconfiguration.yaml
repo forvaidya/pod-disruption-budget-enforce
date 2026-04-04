@@ -35,5 +35,5 @@ webhooks:
     timeoutSeconds: 10
     namespaceSelector:
       matchLabels:
-        # Only enforce on namespaces explicitly labeled for PDB enforcement
-        pdb-webhook-enforce: "true"
+        # Only validate on namespaces explicitly labeled
+        pdb-webhook-validate: "true"
