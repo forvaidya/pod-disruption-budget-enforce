@@ -2,6 +2,29 @@
 
 A production-ready Validating Admission Webhook built in Go that enforces a governance rule: every `Deployment` in a Kubernetes cluster must have a matching `PodDisruptionBudget` (PDB) in the same namespace.
 
+## Important — For Production Use, Consider Kyverno
+
+> **This project is intentionally built from scratch as a learning reference.**
+> It teaches you exactly how Kubernetes admission webhooks work under the hood —
+> TLS handshake, `AdmissionReview` parsing, PDB label matching, mutating vs validating
+> webhooks, HA topology, and EKS upgrade safety.
+>
+> **If you are building for production**, you are strongly encouraged to use
+> **[Kyverno](https://kyverno.io)** instead. Kyverno is a CNCF policy engine that
+> accomplishes everything this project does — PDB enforcement, auto-PDB generation,
+> audit mode, policy reports — with zero Go code, a maintained upstream, and a
+> rich policy library.
+>
+> | Goal | Use |
+> |---|---|
+> | Understand how admission webhooks work | **This project** |
+> | Enforce PDBs in production with minimal overhead | **[Kyverno](https://kyverno.io)** |
+>
+> See [`docs/KYVERNO-PRIMER.md`](docs/KYVERNO-PRIMER.md) for a full comparison and
+> ready-to-use Kyverno policies for PDB enforcement.
+
+---
+
 ## Overview
 
 This webhook system uses **two complementary webhooks** to ensure all Deployments have matching PodDisruptionBudgets:
@@ -341,3 +364,11 @@ This project is provided as-is for educational and operational use.
 - [PodDisruptionBudget API](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-disruption-budget-v1/)
 - [cert-manager Documentation](https://cert-manager.io/docs/)
 - [Distroless Docker Images](https://github.com/GoogleContainerTools/distroless)
+
+## Production Alternative — Kyverno
+
+- [Kyverno](https://kyverno.io) — Kubernetes-native policy engine (recommended for production)
+- [Kyverno — Require PDB Policy](https://kyverno.io/policies/other/require-pdb/require-pdb/) — ready-made, zero code
+- [Kyverno — Auto-create PDB Policy](https://kyverno.io/policies/other/create-default-pdb/create-default-pdb/)
+- [Kyverno — High Availability Guide](https://kyverno.io/docs/guides/high-availability/)
+- [docs/KYVERNO-PRIMER.md](docs/KYVERNO-PRIMER.md) — full primer and comparison in this repo
