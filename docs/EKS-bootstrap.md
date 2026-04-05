@@ -243,6 +243,82 @@ kubectl patch validatingwebhookconfiguration pdb-webhook \
 
 ---
 
+## Bootstrap Acceptance Checklist
+
+**The cluster must NOT be handed to workload teams until every item below is checked and passing.
+Run this checklist once at initial bootstrap and once after every Kubernetes version upgrade.**
+
+### Infrastructure Gates
+
+```bash
+# 1. webhook-infra node group exists with nodes in 3 AZs
+kubectl get nodes -l node.kubernetes.io/role=webhook-infra \
+  -o custom-columns='NAME:.metadata.name,AZ:.metadata.labels.topology\.kubernetes\.io/zone'
+# Expected: 3+ nodes, each in a different AZ
+
+# 2. All 4 webhook pods Running and Ready
+kubectl get pods -n webhook-system -o wide
+# Expected: 4/4 Running, spread across different NODES and AZs
+
+# 3. PDB is active and allows at least 1 disruption
+kubectl get pdb pdb-webhook -n webhook-system
+# Expected: MIN AVAILABLE=3, ALLOWED DISRUPTIONS=1
+
+# 4. Endpoints registered (all 4 pod IPs present)
+kubectl get endpoints pdb-webhook -n webhook-system
+# Expected: 4 IPs listed
+```
+
+### Drain Test — Mandatory
+
+**Do not skip this. Assuming PDB works without testing is not acceptable.**
+
+```bash
+# Pick any webhook-infra node
+NODE=$(kubectl get nodes -l node.kubernetes.io/role=webhook-infra -o jsonpath='{.items[0].metadata.name}')
+
+# Attempt drain — this MUST block and show PDB eviction warning
+kubectl drain $NODE --ignore-daemonsets --delete-emptydir-data
+# Expected output includes:
+# "Cannot evict pod as it would violate the pod's disruption budget"
+# Drain hangs — this is correct behaviour
+
+# Confirm 3 webhook pods still Running during the blocked drain
+kubectl get pods -n webhook-system
+# Expected: 3+ Running (the pod on the cordoned node may show Terminating
+# only after PDB is satisfied by a replacement)
+
+# Uncordon to restore
+kubectl uncordon $NODE
+```
+
+### Webhook Enforcement Test
+
+```bash
+# Confirm webhook rejects a Deployment with no PDB
+kubectl apply -f test/deployment-without-pdb.yaml
+# Expected: admission webhook denied the request
+
+# Confirm webhook allows a Deployment with a PDB
+kubectl apply -f test/deployment-with-pdb.yaml
+# Expected: deployment.apps/... created
+```
+
+### Sign-off
+
+| Gate | Pass/Fail | Verified by | Date |
+|---|---|---|---|
+| 3 webhook-infra nodes across 3 AZs | | | |
+| 4 webhook pods Running, spread across nodes | | | |
+| PDB DisruptionsAllowed = 1 | | | |
+| Drain test blocked by PDB | | | |
+| Webhook rejects deployment-without-pdb | | | |
+| Webhook allows deployment-with-pdb | | | |
+
+> Cluster is not production-ready until all rows are Pass.
+
+---
+
 ## Monitoring Checklist
 
 | What to alert on | Why |
