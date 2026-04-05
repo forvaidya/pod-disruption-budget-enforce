@@ -1,0 +1,17 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pdb-webhook
+  namespace: webhook-system
+  labels:
+    app.kubernetes.io/name: pdb-webhook
+    app.kubernetes.io/component: admission-controller
+spec:
+  # minAvailable: 3 ensures at least 3 webhook pods are always Running and Ready.
+  # During EKS node group upgrades, the node drain will block until a replacement
+  # pod is healthy before evicting the current one — preventing any enforcement gap.
+  # NOTE: requires replicas >= 4 to allow rolling updates (4 - 1 disruption = 3 available).
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pdb-webhook

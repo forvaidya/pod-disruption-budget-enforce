@@ -38,6 +38,16 @@ webhooks:
     # 3. Monitor response latency (timeoutSeconds should be generous)
     sideEffects: None
     timeoutSeconds: 10
-    # Webhook runs on all namespaces but only enforces if both min/max labels are present.
+    # Exclude webhook-system and kube-system from enforcement.
+    # This breaks the circular dependency: if the webhook itself needs to reschedule
+    # during an upgrade, the API server must not block it via its own admission check.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - webhook-system
+            - kube-system
+    # Webhook runs on all other namespaces but only enforces if both min/max labels are present.
     # If only one label is present, deployment is rejected with config error.
     # If neither label is present, deployment is allowed without enforcement.
