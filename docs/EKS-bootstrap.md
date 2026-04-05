@@ -319,6 +319,136 @@ kubectl apply -f test/deployment-with-pdb.yaml
 
 ---
 
+## Alternative: Kyverno as a Ready-Made Policy Engine
+
+[Kyverno](https://kyverno.io) is a Kubernetes-native policy engine that can replace
+this custom webhook for PDB enforcement — with zero Go code required.
+
+### What Kyverno offers for this use case
+
+| Capability | Kyverno | This custom webhook |
+|---|---|---|
+| PDB enforcement (validate) | Built-in policy from policy library | Custom Go handler |
+| Auto-create PDB (mutate) | Built-in generate policy | Custom mutating handler |
+| Policy-as-YAML, no code | Yes | No — requires Go + build pipeline |
+| EKS Best Practices tag | Yes — officially tagged | N/A |
+| Audit vs Enforce mode toggle | Yes | Requires code change |
+| Policy reporting & audit logs | Built-in | Must build separately |
+| Maintenance overhead | Low — upstream maintained | High — you own it |
+
+### Official ready-made policy
+
+Kyverno ships a `require-pdb` ClusterPolicy in its policy library, officially tagged
+as an **EKS Best Practice**. It checks all incoming Deployments and StatefulSets
+to ensure a matching PDB exists in the same namespace:
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pdb
+  annotations:
+    policies.kyverno.io/title: Require PodDisruptionBudget
+    policies.kyverno.io/category: Sample, EKS Best Practices
+    policies.kyverno.io/minversion: 1.6.0
+    policies.kyverno.io/subject: Deployment, PodDisruptionBudget
+    policies.kyverno.io/description: >-
+      PodDisruptionBudget resources are useful to ensuring minimum availability
+      is maintained at all times. This policy checks all incoming Deployments
+      and StatefulSets to ensure they have a matching, preexisting PodDisruptionBudget.
+spec:
+  validationFailureAction: Enforce   # change to Audit for dry-run mode
+  background: false
+  rules:
+    - name: require-pdb
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+      preconditions:
+        all:
+          - key: "{{request.operation || 'BACKGROUND'}}"
+            operator: Equals
+            value: CREATE
+          - key: "{{ request.object.spec.replicas }}"
+            operator: GreaterThanOrEquals
+            value: 3
+      context:
+        - name: pdb_count
+          apiCall:
+            urlPath: /apis/policy/v1/namespaces/{{request.namespace}}/poddisruptionbudgets
+            jmesPath: "items[?label_match(spec.selector.matchLabels, \
+              `{{request.object.spec.template.metadata.labels}}`)] | length(@)"
+      validate:
+        message: "No matching PodDisruptionBudget found for this Deployment."
+        deny:
+          conditions:
+            any:
+              - key: "{{pdb_count}}"
+                operator: LessThan
+                value: 1
+```
+
+> Source: [kyverno.io/policies/other/require-pdb](https://kyverno.io/policies/other/require-pdb/require-pdb/)
+
+### Kyverno HA on EKS — requirements
+
+Kyverno itself is an admission webhook and faces the **same HA problem** as this
+custom webhook. The same principles apply:
+
+- **Minimum 3 replicas** for the admission controller — this is Kyverno's own documented minimum
+- **Dedicated node group** — pin Kyverno pods to an infrastructure node group (same
+  `webhook-infra` pattern described above)
+- **PDB on Kyverno itself** — `minAvailable: 2` at minimum; Kyverno's Helm chart
+  can configure this automatically
+- **Upgrade Kyverno node group first** — same sequencing rule applies
+
+```bash
+# Install Kyverno via Helm in HA mode (3 replicas, PDB included)
+helm repo add kyverno https://kyverno.github.io/kyverno/
+helm repo update
+
+helm install kyverno kyverno/kyverno \
+  --namespace kyverno \
+  --create-namespace \
+  --set admissionController.replicas=3 \
+  --set backgroundController.replicas=2 \
+  --set cleanupController.replicas=2 \
+  --set reportsController.replicas=2 \
+  --set admissionController.podDisruptionBudget.enabled=true \
+  --set admissionController.podDisruptionBudget.minAvailable=2
+```
+
+> Full HA guide: [kyverno.io/docs/guides/high-availability](https://kyverno.io/docs/guides/high-availability/)
+
+### When to use Kyverno vs this custom webhook
+
+**Choose Kyverno if:**
+- You want policy-as-code with no build/deploy pipeline for the enforcer itself
+- You need audit reporting, policy exceptions, or dry-run toggles out of the box
+- You plan to enforce multiple policies beyond PDB (resource limits, image registries, labels, etc.)
+- Team has limited Go expertise
+
+**Keep this custom webhook if:**
+- You need fine-grained label-based namespace enforcement logic (already built here)
+- You need the mutating auto-PDB creation behaviour with custom defaults
+- You want a minimal, single-purpose binary with no external policy engine dependency
+- You already operate this in production and the operational cost is acceptable
+
+### Additional Kyverno policies worth enabling alongside
+
+| Policy | URL |
+|---|---|
+| `require-pdb` | https://kyverno.io/policies/other/require-pdb/require-pdb/ |
+| `create-default-pdb` (auto-generate) | https://kyverno.io/policies/other/create-default-pdb/create-default-pdb/ |
+| `require-reasonable-pdbs` | https://kyverno.io/policies/other/require-reasonable-pdbs/require-reasonable-pdbs/ |
+| `deployment-replicas-higher-than-pdb` | https://kyverno.io/policies/other/deployment-replicas-higher-than-pdb/deployment-replicas-higher-than-pdb/ |
+| `pdb-minavailable` | https://kyverno.io/policies/other/pdb-minavailable/pdb-minavailable/ |
+
+---
+
 ## Monitoring Checklist
 
 | What to alert on | Why |
