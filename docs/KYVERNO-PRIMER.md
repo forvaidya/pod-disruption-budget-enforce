@@ -205,11 +205,23 @@ All ready-made, no code needed:
 
 ## Key Takeaway
 
-> Kyverno is what you'd use if you were starting today and didn't need custom logic.
-> It solves the same problem as this webhook — PDB enforcement — with zero Go code,
-> built-in HA guidance, audit mode, and a maintained policy library.
-> The custom webhook exists here for learning, fine-grained control, and as a reference
-> implementation of how admission webhooks work under the hood.
+**Learn the pattern here. Use Kyverno in production.**
+
+This project is intentionally built from scratch so you understand exactly what happens
+inside a Kubernetes admission webhook:
+- How `AdmissionReview` requests flow from the API server to a webhook
+- How TLS, cert rotation, and `caBundle` injection work
+- How PDB label selectors are matched against Deployment pod templates
+- How mutating and validating webhooks compose together
+- How HA topology, PDBs, and EKS node groups protect the enforcer itself
+
+Once you understand the internals, **[Kyverno](https://kyverno.io)** gives you all of
+this — and much more — without maintaining a Go codebase, a Docker build pipeline,
+or custom webhook registration logic. It is actively maintained, CNCF-backed, and
+has a growing policy library covering hundreds of Kubernetes best practices.
+
+> Users are encouraged to **study this project** to understand the mechanics, then
+> **adopt Kyverno** for real cluster policy enforcement.
 
 ---
 
