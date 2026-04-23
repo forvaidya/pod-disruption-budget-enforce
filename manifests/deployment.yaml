@@ -82,35 +82,13 @@ spec:
           secret:
             secretName: pdb-webhook-tls
             defaultMode: 0400
-      topologySpreadConstraints:
-        # Spread across AZs — hard requirement, never schedule >1 skew between AZs
-        - maxSkew: 1
-          topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: DoNotSchedule
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: pdb-webhook
-        # Spread across nodes within each AZ — best effort
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: DoNotSchedule
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: pdb-webhook
       affinity:
-        nodeAffinity:
-          # Pin webhook pods exclusively to the dedicated webhook-infra node group.
-          # Upgrade this node group first, before application node groups.
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: node.kubernetes.io/role
-                    operator: In
-                    values: ["webhook-infra"]
         podAntiAffinity:
-          # Hard anti-affinity: never place two webhook pods on the same node
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: pdb-webhook
-              topologyKey: kubernetes.io/hostname
+          # Soft anti-affinity: prefer to place webhook pods on different nodes
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: pdb-webhook
+                topologyKey: kubernetes.io/hostname

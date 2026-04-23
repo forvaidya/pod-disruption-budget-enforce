@@ -201,7 +201,23 @@ func (h *MutatingHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("namespace has incomplete PDB configuration",
 			"namespace", workloadNamespace,
 			"error", configErr)
-		h.sendMutatingResponse(w, string(req.UID), nil)
+		response := &admissionv1.AdmissionReview{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: "admission.k8s.io/v1",
+				Kind:       "AdmissionReview",
+			},
+			Response: &admissionv1.AdmissionResponse{
+				UID:     types.UID(req.UID),
+				Allowed: false,
+				Result: &metav1.Status{
+					Status:  metav1.StatusFailure,
+					Code:    400,
+					Message: configErr,
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 		return
 	}
 
@@ -357,9 +373,9 @@ func (h *MutatingHandler) getNamespacePDBLabels(ctx context.Context, namespace s
 	}
 
 	// Look for PDB configuration labels on the namespace
-	// Labels: pdb-min-available and pdb-max-unavailable (both required)
-	minStr, hasMin := ns.Labels["pdb-min-available"]
-	maxStr, hasMax := ns.Labels["pdb-max-unavailable"]
+	// Labels: pdb-webhook.awanipro.com/min-available and pdb-webhook.awanipro.com/max-unavailable (both required)
+	minStr, hasMin := ns.Labels["pdb-webhook.awanipro.com/min-available"]
+	maxStr, hasMax := ns.Labels["pdb-webhook.awanipro.com/max-unavailable"]
 
 	// Both must be present or neither - incomplete config is an error
 	if hasMin != hasMax {
